@@ -16,21 +16,21 @@ failure mode. Everything here is rebuilt so that cannot happen again.
 | TLS record + ClientHello parsing, byte-exact fragmentation | `hyperion/tls_record.py` | Implemented, 32 tests |
 | SHARD engine (record split / byte dribble / zero-SNI rewrite) | `hyperion/shard.py` | Implemented, 24 tests |
 | DoH client (RFC 8484) + Iranian fake-DNS detection | `hyperion/dns.py` | Implemented, 27 tests |
-| Zero-SNI TLS client with CA/SPKI pin verification | `hyperion/zero_sni.py` | Implemented, 16 tests against a real local TLS server |
+| Zero-SNI TLS client with CA/SPKI pin verification | `hyperion/zero_sni.py` | Implemented, 36 tests against a real local TLS server |
 | AmneziaWG junk packets, magic headers, padding | `hyperion/amneziawg.py` | Framing layer implemented, 40 tests. **No Noise handshake** |
 | Truth Gate (signed egress attestation) | `hyperion/truth_gate.py` | Implemented, 24 tests |
 | Orchestrator + CLI | `hyperion/orchestrator.py`, `hyperion/__main__.py` | Implemented, 22 tests (17 orchestrator + 5 vector drift) |
 | Android app (diagnostics + config validation) | `android/` | Builds in CI; JVM unit tests run against Python-generated vectors |
 | Android traffic tunnel | — | **Not implemented.** See below |
 
-Run the suite — 185 tests, all offline:
+Run the suite — 205 tests, all offline:
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-## Three claims from the earlier design that did not survive contact
+## Four claims from the earlier design that did not survive contact
 
 ### 1. "Fragment at byte 99 with lengths 5/94/1"
 
@@ -75,6 +75,23 @@ one: an unset `H1` keeps the stock WireGuard type byte, which is correct.
 
 This module is the packet-framing layer only. The X25519/ChaCha20-Poly1305 Noise
 handshake is not implemented — on a phone that is the kernel module's job.
+
+### 4. "A CA anchor proves who you reached"
+
+It does not, and this one was a live bug rather than a design note. Stripping SNI
+means setting `check_hostname = False`, and OpenSSL then validates the chain and
+*stops* — so with a CA anchor any certificate that reaches a trusted root was
+accepted, whatever domain it was issued for. With a public root as the anchor
+that is any certificate an attacker can obtain, which is the whole attack the
+SPKI pin exists to stop; the CA path quietly did not stop it.
+
+Found by reading `120hdd/ovpn-pin`'s `mobile/core/exit.go`, which splits the two
+checks on purpose and comments that collapsing them "would make the second look
+like the first". `certificate_matches_name()` now does the same: SAN `dNSName`
+entries with a wildcard covering exactly one label, `iPAddress` entries for an
+address literal, and no CN fallback once a SAN exists. `connect()` defaults
+`expect_name` to the dial address whenever a CA anchor is in use, so the safe
+behaviour is the one you get by not thinking about it.
 
 ## The Android app, and why there is no VpnService
 

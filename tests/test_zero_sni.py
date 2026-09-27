@@ -177,3 +177,161 @@ class TestClientHelloOnTheWire:
             pass
         assert captured
         assert sni_in_bytes(captured[0]) == "control.example"
+
+
+class TestCertificateNameIsStillProved:
+    """Dropping SNI must not drop the name check.
+
+    With ``check_hostname = False`` OpenSSL validates the chain and stops, so a
+    CA anchor on its own accepts any valid certificate for any domain -- which
+    with a public root is any certificate an attacker can buy. These pin down
+    the separate claim that the peer serves the name that was asked for.
+    """
+
+    def test_a_ca_anchor_rejects_a_certificate_for_another_name(self, tls_server, certs):
+        with pytest.raises(ZeroSniError, match="does not serve"):
+            connect(
+                "127.0.0.1",
+                port=tls_server.port,
+                anchors=[TrustAnchor(ca_pem=certs.ca_pem)],
+                expect_name="relay.example.net",
+                timeout=5,
+            )
+
+    def test_a_ca_anchor_accepts_the_name_the_certificate_actually_serves(
+        self, tls_server, certs
+    ):
+        sock, report = connect(
+            "127.0.0.1",
+            port=tls_server.port,
+            anchors=[TrustAnchor(ca_pem=certs.ca_pem)],
+            expect_name="hyperion.test",
+            timeout=5,
+        )
+        sock.close()
+        assert report.verification == "verified"
+        assert report.expected_name == "hyperion.test"
+
+    def test_the_dial_address_is_the_default_name_for_a_ca_anchor(self, tls_server, certs):
+        """No expect_name given, so host stands in -- the safe direction."""
+        sock, report = connect(
+            "127.0.0.1",
+            port=tls_server.port,
+            anchors=[TrustAnchor(ca_pem=certs.ca_pem)],
+            timeout=5,
+        )
+        sock.close()
+        assert report.expected_name == "127.0.0.1"
+        assert report.verification == "verified"
+
+    def test_a_pin_anchor_does_not_impose_a_name(self, tls_server, certs):
+        """A pin already fixes identity; there is nothing for a name to add."""
+        sock, report = connect(
+            "127.0.0.1",
+            port=tls_server.port,
+            anchors=[TrustAnchor(spki_sha256_hex=certs.spki_sha256)],
+            timeout=5,
+        )
+        sock.close()
+        assert report.expected_name == ""
+        assert report.verification == "verified"
+
+    def test_opting_out_has_to_be_said_out_loud(self, tls_server, certs):
+        sock, report = connect(
+            "127.0.0.1",
+            port=tls_server.port,
+            anchors=[TrustAnchor(ca_pem=certs.ca_pem)],
+            expect_name="",
+            timeout=5,
+        )
+        sock.close()
+        assert report.expected_name == ""
+        assert report.matched_anchor == "ca-chain"
+
+
+class TestNameMatching:
+    def test_the_fixture_certificate_serves_its_own_name(self, certs):
+        assert zero_sni.certificate_matches_name(certs.leaf_der, "hyperion.test")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "HYPERION.TEST",
+            "hyperion.test.",
+            " hyperion.test ",
+        ],
+    )
+    def test_matching_ignores_case_trailing_dot_and_padding(self, certs, name):
+        assert zero_sni.certificate_matches_name(certs.leaf_der, name)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "evil.hyperion.test",
+            "hyperion.test.evil",
+            "hyperion.testx",
+            "xhyperion.test",
+            "not.hyperion.test",
+            "127.0.0.2",
+            "",
+            "   ",
+        ],
+    )
+    def test_names_it_does_not_serve_are_refused(self, certs, name):
+        assert not zero_sni.certificate_matches_name(certs.leaf_der, name)
+
+    def test_an_address_literal_matches_an_ip_san(self, certs):
+        assert zero_sni.certificate_matches_name(certs.leaf_der, "127.0.0.1")
+
+    def test_a_dns_name_cannot_stand_in_for_an_address(self):
+        """A certificate with only dNSName entries must not satisfy an address.
+
+        Uses the wildcard leaf because the fixture certificate carries a real
+        iPAddress SAN and would match on it, which is the other branch.
+        """
+        der = TestWildcardMatching._wildcard_der()
+        assert not zero_sni.certificate_matches_name(der, "127.0.0.1")
+        assert not zero_sni.certificate_matches_name(der, "::1")
+        # And the name it does serve still matches, so this is not vacuous.
+        assert zero_sni.certificate_matches_name(der, "a.hyperion.test")
+
+
+class TestWildcardMatching:
+    @staticmethod
+    def _wildcard_der() -> bytes:
+        """A self-signed `*.hyperion.test` leaf; matching never consults the issuer."""
+        import datetime
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "*.hyperion.test")])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=2))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName("*.hyperion.test")]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        return cert.public_bytes(serialization.Encoding.DER)
+
+    def test_a_wildcard_covers_exactly_one_label(self):
+        der = self._wildcard_der()
+        assert zero_sni.certificate_matches_name(der, "a.hyperion.test")
+        assert zero_sni.certificate_matches_name(der, "www.hyperion.test")
+        # One label and no more -- the rule OpenSSL applies.
+        assert not zero_sni.certificate_matches_name(der, "a.b.hyperion.test")
+        # And it does not cover the apex.
+        assert not zero_sni.certificate_matches_name(der, "hyperion.test")
+        assert not zero_sni.certificate_matches_name(der, "evil.a.hyperion.test")

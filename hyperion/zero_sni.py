@@ -97,6 +97,78 @@ def der_spki_sha256(der_cert: bytes) -> str:
     return hashlib.sha256(spki).hexdigest()
 
 
+def _name_matches(pattern: str, name: str) -> bool:
+    """Match one dNSName pattern against a name; a wildcard covers one label."""
+    if pattern == name:
+        return True
+    # OpenSSL's rule and RFC 6125's: '*' is legal only leftmost, and covers
+    # exactly one label -- '*.example.com' is not 'a.b.example.com'.
+    if not pattern.startswith("*."):
+        return False
+    suffix = pattern[1:]
+    if not name.endswith(suffix):
+        return False
+    head = name[: -len(suffix)]
+    return bool(head) and "." not in head
+
+
+def certificate_matches_name(der_cert: bytes, name: str) -> bool:
+    """Does this certificate serve ``name``?
+
+    Needed because dropping SNI also drops the hostname check a normal client
+    gets for free: with ``check_hostname = False`` OpenSSL validates the chain
+    and then stops, so *any* certificate that reaches a trusted anchor passes,
+    whatever domain it was issued for. A chain that verifies and a chain that
+    verifies *for the server you meant* are different claims, and only the
+    second one stops a middlebox presenting a valid certificate for somebody
+    else's domain. Kept apart from chain validation for the same reason the
+    errors are kept apart: they fail for different reasons and mean different
+    things.
+    """
+    import ipaddress as _ipaddress
+
+    from cryptography import x509
+    from cryptography.x509.oid import ExtensionOID, NameOID
+
+    target = name.strip().rstrip(".").lower()
+    if not target:
+        return False
+    cert = x509.load_der_x509_certificate(der_cert)
+
+    try:
+        want_ip = _ipaddress.ip_address(target)
+    except ValueError:
+        want_ip = None
+
+    try:
+        san = cert.extensions.get_extension_for_oid(
+            ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+        ).value
+    except x509.ExtensionNotFound:
+        san = None
+
+    if san is not None:
+        # An address literal is matched against iPAddress entries only; a
+        # dNSName is never allowed to stand in for an address.
+        if want_ip is not None:
+            return any(
+                value == want_ip for value in san.get_values_for_type(x509.IPAddress)
+            )
+        names = [n.strip().rstrip(".").lower() for n in san.get_values_for_type(x509.DNSName)]
+        if not names:
+            # SAN present but carrying no dNSName: RFC 6125 forbids falling
+            # back to the CN once a SAN exists.
+            return False
+        return any(_name_matches(pattern, target) for pattern in names)
+
+    # No SAN at all -- the legacy CN fallback, which is all a self-signed
+    # fixture certificate usually has.
+    for attribute in cert.subject:
+        if attribute.oid == NameOID.COMMON_NAME:
+            return _name_matches(str(attribute.value).strip().rstrip(".").lower(), target)
+    return False
+
+
 def der_subject_and_expiry(der_cert: bytes) -> tuple[str, str]:
     """Human-readable subject CN and notAfter, for reports and debugging."""
     from cryptography import x509
@@ -127,6 +199,7 @@ class HandshakeReport:
     sni_sent: bool
     verification: str
     elapsed_ms: float
+    expected_name: str = ""
 
     @property
     def trusted(self) -> bool:
@@ -187,8 +260,16 @@ def connect(
     alpn: Sequence[str] | None = None,
     insecure_skip_verify: bool = False,
     source_address: tuple[str, int] | None = None,
+    expect_name: str | None = None,
 ) -> tuple[ssl.SSLSocket, HandshakeReport]:
     """Open a TLS connection to ``host:port`` without sending SNI.
+
+    ``expect_name`` is the name the certificate must serve. It defaults to
+    ``host`` whenever a CA anchor is in use, because that is the only thing
+    standing between "a chain that reaches a trusted root" and "a chain that
+    reaches a trusted root *for this server*" -- and with a public root as the
+    anchor those are very far apart. Pass ``expect_name=""`` to opt out
+    deliberately; a pin-only anchor already fixes identity and does not need it.
 
     Returns the live socket and a report describing what was proven.  The caller
     owns the socket and must close it.
@@ -199,6 +280,12 @@ def connect(
             "insecure_skip_verify=True explicitly"
         )
     anchors = tuple(anchors or ())
+    if expect_name is None:
+        # With a CA anchor, "the chain reaches a trusted root" and "the chain
+        # reaches a trusted root for this server" are different claims, and the
+        # first one alone lets any valid public certificate through. Defaulting
+        # to the dial address is what every other TLS client does.
+        expect_name = host if any(anchor.ca_pem for anchor in anchors) else ""
     context = build_ssl_context(
         anchors, alpn=alpn, insecure_skip_verify=insecure_skip_verify
     )
@@ -236,6 +323,16 @@ def connect(
                 f"peer pin {peer_pin[:16]}... matches no configured anchor and the "
                 "chain did not verify; this is what a MITM looks like"
             )
+        elif expect_name and not certificate_matches_name(der, expect_name):
+            # A separate error on purpose. A chain that does not reach a root
+            # means the answer came from something that is not the server; a
+            # chain that verifies but serves another name means this address is
+            # not the server it was pinned as. Collapsing them hides which.
+            raise ZeroSniError(
+                f"the certificate at {host}:{port} does not serve {expect_name!r} "
+                f"(subject CN {subject_cn or '<none>'!r}); the anchor held, but this "
+                "is not the server that was asked for"
+            )
         else:
             verification = "verified"
     except Exception:
@@ -256,6 +353,7 @@ def connect(
         sni_sent=False,
         verification=verification,
         elapsed_ms=elapsed_ms,
+        expected_name=expect_name,
     )
     return tls_sock, report
 
@@ -292,6 +390,7 @@ __all__ = [
     "TrustAnchor",
     "ZeroSniError",
     "build_ssl_context",
+    "certificate_matches_name",
     "connect",
     "der_spki_sha256",
     "der_subject_and_expiry",
