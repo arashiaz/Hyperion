@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hyperion"
+version = "0.1.0"
+description = "Censorship-circumvention toolkit: zero-SNI TLS, ClientHello fragmentation, DoH hijack detection, AmneziaWG shaping, signed egress attestation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["cryptography>=41"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+hyperion = "hyperion.__main__:main"
+
+[tool.setuptools]
+packages = ["hyperion"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

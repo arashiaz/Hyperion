@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <EditText
+        android:id="@+id/probe_url"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/probe_url_hint"
+        android:inputType="textUri"
+        android:autofillHints="" />
+
+    <EditText
+        android:id="@+id/secret"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/secret_hint"
+        android:inputType="textPassword"
+        android:autofillHints="" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/run_diagnostics"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/run_diagnostics" />
+
+        <Button
+            android:id="@+id/run_dry"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/run_dry" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/output"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="12dp"
+        android:fontFamily="monospace"
+        android:scrollbars="vertical"
+        android:textIsSelectable="true"
+        android:textSize="12sp" />
+
+</LinearLayout>

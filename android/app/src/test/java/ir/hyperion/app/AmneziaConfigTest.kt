@@ -1,0 +1,195 @@
+package ir.hyperion.app
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class AmneziaConfigTest {
+
+    private val sampleConf = """
+        [Interface]
+        Address = 10.8.0.2/32
+        DNS = 1.1.1.1
+        PrivateKey = aGFzZ2VsbGloYXNnZWxsaWhhc2dlbGxpaGFzZ2VsbGloYXNnZWw=
+        Jc = 4
+        Jmin = 10
+        Jmax = 50
+        S1 = 15
+        S2 = 18
+        H1 = 1849894402
+        H2 = 643248164
+        I1 = <b 0xdeadbeef><r 8>
+
+        [Peer]
+        PublicKey = c2VydmVya2V5c2VydmVya2V5c2VydmVya2V5c2VydmVya2V5c2VydmVyaw==
+        Endpoint = 203.0.113.7:54321
+    """.trimIndent()
+
+    @Test
+    fun `a conf file is read completely`() {
+        val config = AmneziaConfig.fromConf(sampleConf)
+        assertEquals(4, config.jc)
+        assertEquals(10, config.jmin)
+        assertEquals(50, config.jmax)
+        assertEquals(15, config.s1)
+        assertEquals(18, config.s2)
+        assertEquals(AmneziaConfig.UintRange(1849894402, 1849894402), config.h1)
+        assertEquals(AmneziaConfig.UintRange(643248164, 643248164), config.h2)
+        assertEquals("<b 0xdeadbeef><r 8>", config.i1)
+        assertEquals(listOf("10.8.0.2/32"), config.address)
+        assertEquals("203.0.113.7:54321", config.endpoint)
+    }
+
+    @Test
+    fun `keys are matched case insensitively`() {
+        val lower = sampleConf.replace("Jc =", "jc =").replace("H1 =", "h1 =")
+        val config = AmneziaConfig.fromConf(lower)
+        assertEquals(4, config.jc)
+        assertEquals(AmneziaConfig.UintRange(1849894402, 1849894402), config.h1)
+    }
+
+    @Test
+    fun `peer keys do not leak into the interface`() {
+        // The [Peer] section has no PrivateKey; only the interface one counts.
+        val config = AmneziaConfig.fromConf(sampleConf)
+        assertEquals("aGFzZ2VsbGloYXNnZWxsaWhhc2dlbGxpaGFzZ2VsbGloYXNnZWw=", config.privateKey)
+    }
+
+    @Test
+    fun `a config with no interface section is refused`() {
+        try {
+            AmneziaConfig.fromConf("[Peer]\nEndpoint = 1.2.3.4:5\n")
+            throw AssertionError("expected a missing [Interface] to be refused")
+        } catch (e: AmneziaConfig.ConfigError) {
+            assertTrue(e.message!!.contains("[Interface]"))
+        }
+    }
+
+    @Test
+    fun `jc without jmin and jmax is refused`() {
+        try {
+            AmneziaConfig.Config(jc = 3)
+            throw AssertionError("expected jc without sizes to be refused")
+        } catch (e: AmneziaConfig.ConfigError) {
+            assertTrue(e.message!!.contains("jmin/jmax"))
+        }
+    }
+
+    @Test
+    fun `jmin above jmax is refused`() {
+        try {
+            AmneziaConfig.Config(jc = 3, jmin = 90, jmax = 10)
+            throw AssertionError("expected an inverted junk range to be refused")
+        } catch (e: AmneziaConfig.ConfigError) {
+            assertTrue(e.message!!.contains("exceeds"))
+        }
+    }
+
+    @Test
+    fun `jmin without jc is refused`() {
+        try {
+            AmneziaConfig.Config(jmin = 10, jmax = 50)
+            throw AssertionError("expected jmin with jc=0 to be refused")
+        } catch (e: AmneziaConfig.ConfigError) {
+            assertTrue(e.message!!.contains("jc is 0"))
+        }
+    }
+
+    @Test
+    fun `an unknown obfuscation tag is refused`() {
+        try {
+            AmneziaConfig.Config(i1 = "<zz 3>")
+            throw AssertionError("expected an unknown tag to be refused")
+        } catch (e: AmneziaConfig.ConfigError) {
+            assertTrue(e.message!!.contains("unknown obfuscation tag"))
+        }
+    }
+
+    @Test
+    fun `an unclosed obfuscation tag is refused`() {
+        try {
+            AmneziaConfig.parseObfSpec("<b 0x01")
+            throw AssertionError("expected an unclosed tag to be refused")
+        } catch (e: AmneziaConfig.ConfigError) {
+            assertTrue(e.message!!.contains("missing closing"))
+        }
+    }
+
+    @Test
+    fun `all upstream obfuscation tags are recognised`() {
+        val parsed = AmneziaConfig.parseObfSpec("<b 0x01><t 5><r 3><rc 3><rd 3><d><ds><dz 2>")
+        assertEquals(
+            listOf("b", "t", "r", "rc", "rd", "d", "ds", "dz"),
+            parsed.map { it.first },
+        )
+    }
+
+    @Test
+    fun `uapi output uses the upstream key names and omits defaults`() {
+        val uapi = AmneziaConfig.fromConf(sampleConf).toUapi()
+        for (key in listOf("jc=", "jmin=", "jmax=", "s1=", "s2=", "h1=", "h2=", "i1=")) {
+            assertTrue("missing uapi key $key in:\n$uapi", uapi.contains(key))
+        }
+        assertFalse("s3 should be omitted", uapi.contains("s3="))
+        assertEquals("", AmneziaConfig.Config().toUapi())
+    }
+
+    // -- ranges ------------------------------------------------------------
+
+    @Test
+    fun `ranges parse from decimal hex and span forms`() {
+        assertEquals(AmneziaConfig.UintRange(10, 10), AmneziaConfig.UintRange.parse("10"))
+        assertEquals(AmneziaConfig.UintRange(5, 9), AmneziaConfig.UintRange.parse("5-9"))
+        assertEquals(AmneziaConfig.UintRange(16, 16), AmneziaConfig.UintRange.parse("0x10"))
+        assertEquals(AmneziaConfig.UintRange(255, 255), AmneziaConfig.UintRange.parse("ff"))
+    }
+
+    @Test
+    fun `a range renders without a dash when both ends match`() {
+        assertEquals("7", AmneziaConfig.UintRange(7, 7).toString())
+        assertEquals("7-9", AmneziaConfig.UintRange(7, 9).toString())
+    }
+
+    @Test
+    fun `an inverted or oversized range is refused`() {
+        for (text in listOf("9-5", "0-4294967296")) {
+            try {
+                AmneziaConfig.UintRange.parse(text)
+                throw AssertionError("expected $text to be refused")
+            } catch (e: AmneziaConfig.ConfigError) {
+                assertTrue(e.message != null)
+            }
+        }
+    }
+
+    @Test
+    fun `an unset magic header stays null so the stock value survives`() {
+        val config = AmneziaConfig.fromConf("[Interface]\nJc = 1\nJmin = 1\nJmax = 2\n")
+        assertNull(config.h1)
+        assertNull(config.h4)
+    }
+
+    // -- client hello ------------------------------------------------------
+
+    @Test
+    fun `the zero sni client hello carries no server name extension`() {
+        val hello = ClientHelloBuilder.build(sni = null)
+        assertFalse(ClientHelloBuilder.containsSni(hello))
+        assertEquals(22, hello[0].toInt()) // handshake record
+    }
+
+    @Test
+    fun `the control hello does carry sni so the test above is not vacuous`() {
+        val hello = ClientHelloBuilder.build(sni = "control.example")
+        assertTrue(ClientHelloBuilder.containsSni(hello))
+    }
+
+    @Test
+    fun `the client hello record length matches its payload`() {
+        val hello = ClientHelloBuilder.build(sni = null)
+        val declared = ((hello[3].toInt() and 0xFF) shl 8) or (hello[4].toInt() and 0xFF)
+        assertEquals(hello.size - 5, declared)
+    }
+}

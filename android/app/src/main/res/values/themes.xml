@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Hyperion" parent="Theme.AppCompat.DayNight.DarkActionBar">
+        <item name="colorPrimary">#1B2A41</item>
+        <item name="colorPrimaryDark">#121C2B</item>
+        <item name="colorAccent">#4FC3F7</item>
+    </style>
+</resources>

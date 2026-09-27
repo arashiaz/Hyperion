@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hyperion</string>
+    <string name="probe_url_hint">Attestation URL (https://your-server/gate)</string>
+    <string name="secret_hint">Attestation secret (base64)</string>
+    <string name="run_diagnostics">Run full check</string>
+    <string name="run_dry">Offline check only</string>
+    <string name="intro">Hyperion verifies a circumvention path instead of assuming it works.\n\nEnter the attestation URL and secret your exit server was provisioned with, then run the full check. Every step reports what it actually proved.</string>
+    <string name="running">Running…</string>
+</resources>
