@@ -13,7 +13,18 @@ import secrets
 import sys
 import time
 
-from . import __version__, amneziawg, dns, orchestrator, shard, tls_record, truth_gate, zero_sni
+from . import (
+    __version__,
+    amneziawg,
+    dns,
+    orchestrator,
+    selector,
+    shard,
+    tls_record,
+    transport,
+    truth_gate,
+    zero_sni,
+)
 
 
 def cmd_hunt(args: argparse.Namespace) -> int:
@@ -100,6 +111,74 @@ def cmd_gate(args: argparse.Namespace) -> int:
     return 0 if verdict.passed else 1
 
 
+def cmd_select(args: argparse.Namespace) -> int:
+    """Race exits and report which is live, and whether it proved itself.
+
+    Exit status is three-valued on purpose: 0 attested, 2 answered but proved
+    nothing, 1 no path at all. Collapsing 2 into 0 is exactly the mistake this
+    project keeps finding in other clients.
+    """
+    anchors: list[zero_sni.TrustAnchor] = []
+    if args.ca:
+        with open(args.ca, "r", encoding="utf-8") as handle:
+            anchors.append(zero_sni.TrustAnchor(ca_pem=handle.read()))
+    if args.pin:
+        anchors.append(zero_sni.TrustAnchor(spki_sha256_hex=args.pin))
+
+    gate = None
+    if args.secret:
+        gate = truth_gate.Gate(
+            secret=base64.b64decode(args.secret + "=" * (-len(args.secret) % 4))
+        )
+    attest = gate is not None
+    if not attest:
+        print("NOTE: no --secret, so nothing can be attested; a winner is UNPROVEN")
+
+    candidates = []
+    for index, target in enumerate(args.targets):
+        host, sep, port_text = target.rpartition(":")
+        port = int(port_text) if sep else args.port
+        name = args.name[index] if args.name and index < len(args.name) else f"exit-{index + 1}"
+        candidates.append(
+            transport.zero_sni_candidate(
+                name,
+                host or target,
+                port,
+                anchors=anchors,
+                attest_path=args.path,
+                insecure_skip_verify=args.insecure,
+                attest=attest,
+            )
+        )
+
+    memory = None
+    if args.memory:
+        if not args.net:
+            print("REFUSED: --memory needs at least one --net fact to key on")
+            return 1
+        fingerprint = selector.network_fingerprint(*args.net)
+        memory = selector.NetworkMemory.load(args.memory, fingerprint)
+        candidates = memory.order(candidates)
+        print(f"network fingerprint: {fingerprint}")
+
+    report = selector.select(
+        candidates, timeout=args.timeout, width=args.width, gate=gate
+    )
+    for line in report.lines():
+        print(line)
+    print(f"  ({len(report.results)} probed, width {report.width}, "
+          f"{report.elapsed_ms:.0f}ms total)")
+
+    if memory is not None:
+        memory.record_all(report.results)
+        memory.save(args.memory)
+        print(f"remembered {len(memory.entries)} paths in {args.memory}")
+
+    if report.winner is None:
+        return 1
+    return 0 if report.winner.attested else 2
+
+
 def cmd_keygen(args: argparse.Namespace) -> int:
     """Print a fresh attestation secret (base64) for the server and the client."""
     print(base64.b64encode(truth_gate.Attestor.generate_secret()).decode("ascii"))
@@ -177,6 +256,31 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--secret", required=True, help="base64 HMAC secret")
     gate.add_argument("--timeout", type=float, default=8.0)
     gate.set_defaults(func=cmd_gate)
+
+    select = sub.add_parser(
+        "select",
+        help="race exits; 0 attested, 2 answered but unproven, 1 no path",
+    )
+    select.add_argument("targets", nargs="+", metavar="HOST[:PORT]",
+                        help="exit addresses to race")
+    select.add_argument("--name", action="append", metavar="LABEL",
+                        help="label for a target, in order; defaults to exit-N")
+    select.add_argument("--port", type=int, default=443,
+                        help="port for a target written without one")
+    select.add_argument("--ca", help="PEM trust anchor")
+    select.add_argument("--pin", help="SPKI SHA-256 pin")
+    select.add_argument("--secret", help="base64 attestation secret; without it nothing is proven")
+    select.add_argument("--path", default=transport.DEFAULT_ATTEST_PATH,
+                        help="attestation path on the exit")
+    select.add_argument("--insecure", action="store_true",
+                        help="skip certificate verification (lab benches only)")
+    select.add_argument("--width", type=int, default=selector.DEFAULT_WIDTH,
+                        help="how many to ask at once (measured best: 8)")
+    select.add_argument("--timeout", type=float, default=8.0)
+    select.add_argument("--memory", help="JSON file remembering what worked")
+    select.add_argument("--net", action="append", metavar="FACT",
+                        help="an observable fact about this network, to key the memory on")
+    select.set_defaults(func=cmd_select)
 
     keygen = sub.add_parser("keygen", help="print a fresh attestation secret")
     keygen.set_defaults(func=cmd_keygen)

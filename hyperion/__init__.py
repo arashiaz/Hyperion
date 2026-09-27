@@ -8,10 +8,22 @@ Submodules
 :mod:`hyperion.zero_sni`     TLS client that sends no SNI and proves the peer by pin
 :mod:`hyperion.amneziawg`    AmneziaWG junk packets, magic headers and padding
 :mod:`hyperion.truth_gate`   signed egress attestation (replaces the naive HTTP-204 check)
+:mod:`hyperion.selector`     race transports, classify the failure, remember what worked
+:mod:`hyperion.transport`    the reference transport: no-SNI HTTPS to an attesting exit
 :mod:`hyperion.orchestrator` runs the chain and reports what was proven
 """
 
-from . import amneziawg, dns, orchestrator, shard, tls_record, truth_gate, zero_sni
+from . import (
+    amneziawg,
+    dns,
+    orchestrator,
+    selector,
+    shard,
+    tls_record,
+    transport,
+    truth_gate,
+    zero_sni,
+)
 
 __version__ = "0.1.0"
 
@@ -20,8 +32,10 @@ __all__ = [
     "amneziawg",
     "dns",
     "orchestrator",
+    "selector",
     "shard",
     "tls_record",
+    "transport",
     "truth_gate",
     "zero_sni",
 ]

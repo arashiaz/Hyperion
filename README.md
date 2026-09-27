@@ -19,11 +19,13 @@ failure mode. Everything here is rebuilt so that cannot happen again.
 | Zero-SNI TLS client with CA/SPKI pin verification | `hyperion/zero_sni.py` | Implemented, 36 tests against a real local TLS server |
 | AmneziaWG junk packets, magic headers, padding | `hyperion/amneziawg.py` | Framing layer implemented, 40 tests. **No Noise handshake** |
 | Truth Gate (signed egress attestation) | `hyperion/truth_gate.py` | Implemented, 24 tests |
+| Path selector: race transports, classify the failure, remember what worked | `hyperion/selector.py` | Implemented, 47 tests |
+| Reference transport: no-SNI HTTPS to an attesting exit | `hyperion/transport.py` | Implemented, 27 tests including a real TLS handshake |
 | Orchestrator + CLI | `hyperion/orchestrator.py`, `hyperion/__main__.py` | Implemented, 22 tests (17 orchestrator + 5 vector drift) |
 | Android app (diagnostics + config validation) | `android/` | Builds in CI; JVM unit tests run against Python-generated vectors |
 | Android traffic tunnel | — | **Not implemented.** See below |
 
-Run the suite — 205 tests, all offline:
+Run the suite — 279 tests, all offline:
 
 ```bash
 pip install -r requirements-dev.txt
@@ -93,6 +95,45 @@ address literal, and no CN fallback once a SAN exists. `connect()` defaults
 `expect_name` to the dial address whenever a CA anchor is in use, so the safe
 behaviour is the one you get by not thinking about it.
 
+## Why a selector and not a new protocol
+
+The three strongest projects in this space all converged on the same move: they
+do not pick a protocol, they measure and then pick. `MSN-GUARD` orders its
+Psiphon ladder by *measured* time-to-connect on a hostile carrier. `ovpn-pin`
+races exits and takes the first that answers, and its own measurements put the
+width at eight because wider is slower — the handshakes compete for the same
+upstream. `Aether` hunts the best MASQUE gateway and remembers it.
+
+A new protocol is the opposite bet, and the evidence is against it. `MSN-GUARD`
+records that on the worst Iranian carrier every direct dial dies at the TCP
+layer — null-routed, no RST — and a novel protocol does not survive that; the
+packets never arrive. `Aether`'s own documentation says the variable that
+differs between networks is *which port passes*, not which protocol. And
+`ovpn-pin` got through China's filtering with port 443, TLS to an IP, and no
+SNI: an old protocol used correctly. Structurally, a new protocol is novel, and
+novel is identifiable — filtering does not need to understand traffic to block
+it, only to see that it resembles nothing else. What survives in Iran hides in
+traffic that cannot be blocked without collateral damage.
+
+So the novel part here is the decision layer. Two things were genuinely missing:
+
+* Racing **across** transports. `Aether`'s `lastconn.rs` remembers the last
+  working gateway keyed on `CARRIER_MASQUE_H3` / `CARRIER_MASQUE_H2` /
+  `CARRIER_WIREGUARD` — transport names, not networks. So it can answer "which
+  gateway worked last time I used MASQUE-H3" and cannot answer "which way out
+  is live here now".
+* A uniform reading of failure. `ovpn-pin` has `ErrFiltered` for TLS (TCP
+  completes, the handshake is swallowed) and this project had sinkhole
+  detection for DNS, but nothing classified them together — and the two need
+  opposite responses, because one says try again and the other says never on
+  this line.
+
+`hyperion/selector.py` does both, and `hyperion/transport.py` supplies one
+transport implemented end to end so the selector is not an empty frame. The
+transport is deliberately boring: the same no-SNI HTTPS shape `ovpn-pin`
+shipped, with the one thing it cannot have — the exit is yours, so the exit can
+sign what it saw.
+
 ## The Android app, and why there is no VpnService
 
 The earlier plan had a `HyperionVpnService.kt` owning a TUN interface. A TUN
@@ -127,6 +168,8 @@ python -m hyperion hunt                     # rank DoH resolvers, flag injected 
 python -m hyperion hello --sni blocked.example
 python -m hyperion connect HOST --ca ca.pem # or --pin <SPKI sha256>
 python -m hyperion gate URL --secret <b64>
+python -m hyperion select H1:443 H2:443 --ca ca.pem --secret <b64> \
+                          --memory paths.json --net wlan0 --net 192.168.1.1
 python -m hyperion amnezia wg.conf
 python -m hyperion run --host H --probe URL --secret <b64> --ca ca.pem
 python -m hyperion run --dry-run ...        # exits 1; prints NOT VERIFIED
@@ -154,3 +197,15 @@ and the CI workflow re-generates and diffs it as a separate check.
   observed by this code in the field.
 * The AmneziaWG framing layer has no peer to talk to in this repository, so
   `frame_packet`/`unframe_packet` round-tripping is tested only against itself.
+* The selector's tests inject every probe, and the reference transport's
+  end-to-end tests run against a local TLS server on loopback. No candidate has
+  ever been raced across a real censored line, so the measured race width of 8
+  is `ovpn-pin`'s number, not one this project reproduced.
+* `REFUSED` versus `FILTERED` is a heuristic. An RST can be a closed port or a
+  DPI box injecting one, and a client cannot reliably tell them apart; the rule
+  used (a reset to the SYN is a refusal, a reset after TCP was up is filtering)
+  is a judgement about which mistake costs less, not a determination.
+* `network_fingerprint` hashes whatever facts the caller supplies. It does not
+  identify the ISP and does not try to. On a phone the caller should pass the
+  platform's own network handle; passing nothing useful produces a key that
+  matches everything, which is worse than no memory at all.
