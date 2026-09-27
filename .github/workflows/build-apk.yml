@@ -75,37 +75,44 @@ jobs:
           set -o pipefail
           gradle --no-daemon --stacktrace --continue testDebugUnitTest 2>&1 | tee /tmp/gradle-unit-tests.log
 
-      # Runner logs are only retrievable through the Actions blob host, which is
-      # not reachable from every environment. The job summary is served by the
-      # REST API, so mirror the failure detail there.
-      - name: Publish failure detail to the job summary
+      # Runner logs live on the Actions blob host, which is not reachable from
+      # every environment, and step summaries are not exposed through the REST
+      # API. Check-run *annotations* are, so surface each failure as one.
+      - name: Publish failure detail as annotations
         if: failure()
         working-directory: android
         shell: bash
         run: |
-          {
-            echo '## Gradle output (tail)'
-            echo '```'
-            tail -c 30000 /tmp/gradle-unit-tests.log 2>/dev/null || echo "(no gradle log)"
-            echo '```'
-            echo
-            echo '## Failing test cases'
-            shopt -s nullglob
-            for f in app/build/test-results/testDebugUnitTest/*.xml; do
-              python3 - "$f" <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          tree = ET.parse(sys.argv[1])
-          for case in tree.getroot().iter('testcase'):
-              for kind in ('failure', 'error'):
-                  for node in case.findall(kind):
-                      print(f"### {case.get('classname')}.{case.get('name')}")
-                      print('```')
-                      print((node.get('message') or '')[:2000])
-                      print((node.text or '')[:4000])
-                      print('```')
+          shopt -s nullglob
+          python3 - <<'PY'
+          import glob, re, xml.etree.ElementTree as ET
+
+          def emit(level, title, message):
+              # Annotation messages are single-line; keep them short and readable.
+              flat = " ".join(str(message).split())[:1500]
+              print(f"::{level} title={title}::{flat}")
+
+          files = sorted(glob.glob("app/build/test-results/testDebugUnitTest/*.xml"))
+          if not files:
+              emit("error", "no test results", "Gradle produced no JUnit XML; the failure is a compile or configuration error")
+
+          for path in files:
+              root = ET.parse(path).getroot()
+              for case in root.iter("testcase"):
+                  for kind in ("failure", "error"):
+                      for node in case.findall(kind):
+                          detail = node.get("message") or (node.text or "").strip()
+                          emit("error", f"{case.get('classname')}.{case.get('name')}", detail)
+
+          # Compile errors never reach the XML, so mirror the Gradle diagnostics.
+          try:
+              log = open("/tmp/gradle-unit-tests.log", errors="replace").read()
+          except OSError:
+              log = ""
+          for line in log.splitlines():
+              if re.search(r"(^|\s)e: |error:|FAILURE:|What went wrong|Could not resolve|Unresolved reference", line):
+                  emit("error", "gradle", line.strip())
           PY
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build the debug APK
         working-directory: android
