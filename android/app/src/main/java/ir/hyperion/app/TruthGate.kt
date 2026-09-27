@@ -116,13 +116,13 @@ object TruthGate {
             val age = nowSeconds - attestation.timestampSeconds
             return when {
                 age > windowSeconds ->
-                    Check("freshness", false, "attestation is ${"%.1f".format(age)}s old, window is ${windowSeconds.toLong()}s")
+                    Check("freshness", false, "attestation is ${fmt(age)}s old, window is ${windowSeconds.toLong()}s")
                 age < -windowSeconds ->
-                    Check("freshness", false, "attestation is dated ${"%.1f".format(-age)}s in the future")
+                    Check("freshness", false, "attestation is dated ${fmt(-age)}s in the future")
                 seenNonces.contains(attestation.nonce) ->
                     Check("freshness", false, "nonce was already accepted (replay)")
                 else ->
-                    Check("freshness", true, "fresh, ${"%.1f".format(age)}s old, nonce unseen")
+                    Check("freshness", true, "fresh, ${fmt(age)}s old, nonce unseen")
             }
         }
 
@@ -187,6 +187,10 @@ object TruthGate {
     }
 
     fun now(): Double = System.currentTimeMillis() / 1000.0
+
+    /** Locale-independent one-decimal rendering, so report text is stable. */
+    private fun fmt(value: Double): String =
+        String.format(java.util.Locale.ROOT, "%.1f", value)
 
     /**
      * True for an address that is routable on the public internet.

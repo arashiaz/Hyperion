@@ -46,7 +46,9 @@ class DohResolverTest {
     @Test
     fun `a query has the documented shape`() {
         val query = DohResolver.encodeQuery("example.com")
-        assertEquals(12 + 13 + 1 + 4, query.size)
+        // 12-byte header + 13-byte encoded qname (root label included) + 4-byte
+        // QTYPE/QCLASS == 29, matching hyperion.dns.encode_query exactly.
+        assertEquals(29, query.size)
         assertEquals(0x48, query[0].toInt() and 0xFF)
         assertEquals(0x59, query[1].toInt() and 0xFF)
         assertEquals(0x01, query[2].toInt() and 0xFF) // RD set

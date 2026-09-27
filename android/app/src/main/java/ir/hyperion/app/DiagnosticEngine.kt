@@ -1,7 +1,6 @@
 package ir.hyperion.app
 
 import java.net.HttpURLConnection
-import java.net.InetAddress
 import java.net.URL
 import java.util.Base64
 

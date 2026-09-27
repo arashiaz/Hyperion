@@ -18,6 +18,10 @@ class TruthGateTest {
 
     private val vectors: Map<String, Any?> get() = Vectors.document
 
+    /** Locale-independent three-decimal rendering, matching Python's `:.3f`. */
+    private fun fixedTs(seconds: Double): String =
+        String.format(java.util.Locale.ROOT, "%.3f", seconds)
+
     private val hmac: Map<String, Any?> get() = vectors["hmac"].asMap()
     private val secret: ByteArray get() = Base64.getDecoder().decode(hmac["secret_b64"].asString())
     private val attestations: List<Map<String, Any?>>
@@ -88,7 +92,7 @@ class TruthGateTest {
      */
     private fun body(
         egress: String = "93.184.216.34",
-        ts: String = "%.3f".format(TruthGate.now()),
+        ts: String = fixedTs(TruthGate.now()),
         nonce: String = "nonce-1",
         tamper: ((egress: String, ts: String, nonce: String, signature: String) -> String)? = null,
     ): String {
@@ -142,14 +146,14 @@ class TruthGateTest {
 
     @Test
     fun `an expired attestation is rejected`() {
-        val stale = "%.3f".format(TruthGate.now() - 3600)
+        val stale = fixedTs(TruthGate.now() - 3600)
         val verdict = TruthGate.Gate(secret).verify(body(ts = stale), httpStatus = 200)
         assertTrue(verdict.failed.contains("freshness"))
     }
 
     @Test
     fun `a future dated attestation is rejected`() {
-        val future = "%.3f".format(TruthGate.now() + 3600)
+        val future = fixedTs(TruthGate.now() + 3600)
         val verdict = TruthGate.Gate(secret).verify(body(ts = future), httpStatus = 200)
         assertTrue(verdict.failed.contains("freshness"))
     }
