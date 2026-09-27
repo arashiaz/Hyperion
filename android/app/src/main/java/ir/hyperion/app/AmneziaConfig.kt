@@ -80,8 +80,13 @@ object AmneziaConfig {
         val privateKey: String = "",
         val address: List<String> = emptyList(),
         val dns: List<String> = emptyList(),
+        // Peer section. A client that cannot name its endpoint cannot connect,
+        // so these are first-class rather than something the caller re-parses.
         val endpoint: String = "",
         val publicKey: String = "",
+        val presharedKey: String = "",
+        val allowedIPs: List<String> = emptyList(),
+        val persistentKeepalive: Int = 0,
     ) {
         init {
             if (jc != 0 && (jmin == 0 || jmax == 0)) {
@@ -137,59 +142,73 @@ object AmneziaConfig {
     }
 
     /**
-     * Parse an AmneziaWG `.conf`. Key matching is case-insensitive, as the real
-     * tooling accepts `Jc` and `jc` alike.
+     * Parse an AmneziaWG `.conf`.
+     *
+     * Key matching is case-insensitive, as the real tooling accepts `Jc` and `jc`
+     * alike. Both `[Interface]` and `[Peer]` are read; the earlier version of this
+     * parser only read the interface section, which left `endpoint` permanently
+     * empty -- and a client that does not know its endpoint cannot connect.
      */
     fun fromConf(text: String): Config {
-        val values = mutableMapOf<String, String>()
-        var inInterface = false
-        var sawInterface = false
+        val sections = linkedMapOf<String, MutableMap<String, String>>()
+        var current: String? = null
         for (rawLine in text.split('\n')) {
             val line = rawLine.trim()
             if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) continue
-            if (line.startsWith("[")) {
-                inInterface = line.equals("[Interface]", ignoreCase = true)
-                if (inInterface) sawInterface = true
+            if (line.startsWith("[") && line.endsWith("]")) {
+                current = line.substring(1, line.length - 1).trim().lowercase()
+                sections.getOrPut(current) { linkedMapOf() }
                 continue
             }
-            if (!inInterface) continue
+            val section = current ?: continue
             val equals = line.indexOf('=')
             if (equals <= 0) continue
-            values[line.substring(0, equals).trim().lowercase()] = line.substring(equals + 1).trim()
+            sections.getOrPut(section) { linkedMapOf() }[
+                line.substring(0, equals).trim().lowercase(),
+            ] = line.substring(equals + 1).trim()
         }
-        if (!sawInterface) throw ConfigError("config has no [Interface] section")
 
-        fun num(key: String): Int = values[key]?.takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 0
-        fun range(key: String): UintRange? = values[key]?.takeIf { it.isNotEmpty() }?.let { UintRange.parse(it) }
-        fun list(key: String): List<String> =
+        val iface = sections["interface"]
+            ?: throw ConfigError("config has no [Interface] section")
+        val peer = sections["peer"] ?: emptyMap()
+
+        fun num(values: Map<String, String>, key: String): Int =
+            values[key]?.takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 0
+        fun range(values: Map<String, String>, key: String): UintRange? =
+            values[key]?.takeIf { it.isNotEmpty() }?.let { UintRange.parse(it) }
+        fun list(values: Map<String, String>, key: String): List<String> =
             values[key]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
-        fun bool(key: String): Boolean = values[key]?.lowercase() in setOf("1", "true")
+        fun bool(values: Map<String, String>, key: String): Boolean =
+            values[key]?.lowercase() in setOf("1", "true")
 
         return Config(
-            jc = num("jc"),
-            jmin = num("jmin"),
-            jmax = num("jmax"),
-            s1 = num("s1"),
-            s2 = num("s2"),
-            s3 = num("s3"),
-            s4 = num("s4"),
-            h1 = range("h1"),
-            h2 = range("h2"),
-            h3 = range("h3"),
-            h4 = range("h4"),
-            i1 = values["i1"] ?: "",
-            i2 = values["i2"] ?: "",
-            i3 = values["i3"] ?: "",
-            i4 = values["i4"] ?: "",
-            i5 = values["i5"] ?: "",
-            headerProtectionKey = values["headerprotectionkey"] ?: "",
-            randomTrailers = bool("randomtrailers"),
-            disableCookies = bool("disablecookies"),
-            privateKey = values["privatekey"] ?: "",
-            address = list("address"),
-            dns = list("dns"),
-            endpoint = values["endpoint"] ?: "",
-            publicKey = values["publickey"] ?: "",
+            jc = num(iface, "jc"),
+            jmin = num(iface, "jmin"),
+            jmax = num(iface, "jmax"),
+            s1 = num(iface, "s1"),
+            s2 = num(iface, "s2"),
+            s3 = num(iface, "s3"),
+            s4 = num(iface, "s4"),
+            h1 = range(iface, "h1"),
+            h2 = range(iface, "h2"),
+            h3 = range(iface, "h3"),
+            h4 = range(iface, "h4"),
+            i1 = iface["i1"] ?: "",
+            i2 = iface["i2"] ?: "",
+            i3 = iface["i3"] ?: "",
+            i4 = iface["i4"] ?: "",
+            i5 = iface["i5"] ?: "",
+            headerProtectionKey = iface["headerprotectionkey"] ?: "",
+            randomTrailers = bool(iface, "randomtrailers"),
+            disableCookies = bool(iface, "disablecookies"),
+            privateKey = iface["privatekey"] ?: "",
+            address = list(iface, "address"),
+            dns = list(iface, "dns"),
+            endpoint = peer["endpoint"] ?: "",
+            publicKey = peer["publickey"] ?: "",
+            presharedKey = peer["presharedkey"] ?: "",
+            allowedIPs = list(peer, "allowedips"),
+            persistentKeepalive = num(peer, "persistentkeepalive"),
         )
     }
 
